@@ -139,11 +139,11 @@ void FenToKey(const char *fen, XQKEY *xqKey)
 	int bits = 0;//缓冲区里已保存的位数
 	for (int index = 0; index < size; index++)
 	{
-		if (ary[index] == -1)
+		if (ary[index] == -1)//无棋直接用0（占1位）
 		{
 			bits++;
 		}
-		else
+		else//有棋用1+棋子编码（占1+4=5位）
 		{
 			buffer |= 1 << (bufferBits - bits - 1);
 			buffer |= ary[index] << (bufferBits - bits - 1 - codeBits);
