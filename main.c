@@ -2,7 +2,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "sqlite3.h"
+#include "db.h"
+#pragma comment(lib,"libdb181d.lib")
 
 typedef unsigned char bool;
 #define true 1
@@ -189,31 +190,24 @@ unsigned short MirrorMove(unsigned short move, bool mirrorUD, bool mirrorLR, int
 bool BookInsert(const char *bookName, const XQKEY *xqKey, const BOOKITEM *bookItem)
 {
 	bool success = false;
-	sqlite3 *db;
-	if (sqlite3_open(bookName, &db) == SQLITE_OK)
+	DB *dbp;
+	db_create(&dbp, NULL, 0);
+	if (dbp->open(dbp, NULL, bookName, NULL, DB_BTREE, DB_CREATE, 0664) == 0)
 	{
-		char sql[1024] = "insert into book(Key,Move,Score,Win,Draw,Lost,Valid,Memo) values(x'";
-		int index = strlen(sql);
-		for (int i = 0; i < xqKey->KeyLen; i++)
+		DBT key = {0};
+		DBT data = {0};
+		key.data = xqKey->Key;
+		key.size = xqKey->KeyLen;
+		unsigned char *pData = malloc(4096);
+		if (dbp->get(dbp, NULL, &key, &data, 0) == 0)
 		{
-			sprintf(sql + index, "%02X", xqKey->Key[i]);
-			index += 2;
+			memcpy(pData, data.data, data.size);
+			//释放data？
 		}
-		sprintf(sql + index, "',%d,%d,%d,%d,%d,%d,", 
-			MirrorMove(bookItem->Move, xqKey->MirrorUD, xqKey->MirrorLR, xqKey->Rows, xqKey->Cols),//根据局面是否镜像，决定着法是否也镜像保存
-			bookItem->Score, bookItem->Win, bookItem->Draw, bookItem->Lost, bookItem->Valid);
-		if (bookItem->Memo[0] == 0)
-		{
-			strcat(sql, "NULL");
-		}
-		else
-		{
-			index = strlen(sql);
-			sprintf(sql + index, "'%s'", bookItem->Memo);//注意memo里的内容要保证是utf8编码再插入
-		}
-		strcat(sql, ")");
-		success = sqlite3_exec(db, sql, NULL, NULL, NULL) == SQLITE_OK;
-		sqlite3_close(db);
+		data.size += BookItemToData(bookItem, pData + data.size);
+		dbp->put(dbp, NULL, &key, &data, 0);
+		free(pData);
+		dbp->close(dbp, 0);
 	}
 	return success;
 }
@@ -221,42 +215,20 @@ bool BookInsert(const char *bookName, const XQKEY *xqKey, const BOOKITEM *bookIt
 int BookQuery(const char *bookName, const XQKEY *xqKey, BOOKITEM *bookItems)
 {
 	int count = 0;
-	sqlite3 *db;
-	if (sqlite3_open(bookName, &db) == SQLITE_OK)
+	DB *dbp;
+	db_create(&dbp, NULL, 0);
+	if (dbp->open(dbp, NULL, bookName, NULL, DB_BTREE, DB_CREATE, 0664) == 0)
 	{
-		char sql[1024]="select Id,Move,Score,Win,Draw,Lost,Valid,Memo from book where key=x'";
-		int index = strlen(sql);
-		for (int i = 0; i < xqKey->KeyLen; i++)
+		DBT key = {0};
+		DBT data = {0};
+		key.data = xqKey->Key;
+		key.size = xqKey->KeyLen;
+		if (dbp->get(dbp, NULL, &key, &data, 0) == 0)
 		{
-			sprintf(sql + index, "%02X", xqKey->Key[i]);
-			index += 2;
+			count = DataToBookItems(data.data, data.size, bookItems);
+			//释放data？
 		}
-		strcat(sql, "'");
-		char **dbResult = NULL;
-		int rows = 0, cols = 0;
-		if (sqlite3_get_table(db, sql, &dbResult, &rows, &cols, NULL) == SQLITE_OK)
-		{
-			for (int i = 1; i <= rows; i++)
-			{
-				int index = i * cols;
-				bookItems[count].Id = atoi(dbResult[index + 0]);
-				bookItems[count].Move = MirrorMove(atoi(dbResult[index + 1]), xqKey->MirrorUD, xqKey->MirrorLR, xqKey->Rows, xqKey->Cols);//库里保存的着法可能是镜像的
-				bookItems[count].Score = atoi(dbResult[index + 2]);
-				bookItems[count].Win = atoi(dbResult[index + 3]);
-				bookItems[count].Draw = atoi(dbResult[index + 4]);
-				bookItems[count].Lost = atoi(dbResult[index + 5]);
-				bookItems[count].Valid = atoi(dbResult[index + 6]);
-				const char *memo = dbResult[index + 7];
-				int memoLen = memo == NULL ? 0 : strlen(memo);
-				if (sizeof(bookItems[count].Memo) - 1 < memoLen)
-					memoLen = sizeof(bookItems[count].Memo) - 1;
-				memcpy(bookItems[count].Memo, memo, memoLen);
-				bookItems[count].Memo[memoLen] = 0;//注意memo读出来是utf8编码
-				count++;
-			}
-			sqlite3_free_table(dbResult);
-		}
-		sqlite3_close(db);
+		dbp->close(dbp, 0);
 	}
 	return count;
 }
@@ -265,12 +237,32 @@ int main(int argc, char **argv)
 {
 	const char *bookName = "book.xqb";
 
-	//插入测试
+	//单条插入测试
 	//XQKEY xqKey;
 	//FenToKey("rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1", &xqKey);//初始局面
 	//BOOKITEM bookItem = { 0 };
 	//bookItem.Move = 0x6656;//兵三进一（6行6列->5行6列）
 	//BookInsert(bookName, &xqKey, &bookItem);
+
+	//批量插入测试
+	/*FILE *file = fopen("1+2+3mvs.txt", "r");
+	if (file)
+	{
+		char line[256];
+		while (fgets(line, sizeof(line), file))
+		{
+			char *move = strchr(line, ',') + 1;
+			char *score = strchr(move, ',') + 1;
+			XQKEY xqKey;
+			FenToKey(line, &xqKey);
+			BOOKITEM bookItem = { 0 };
+			bookItem.Move = (xqKey.Rows - 1 - move[1] + '0' << 12) | (move[0] - 'a' << 8) 
+				| (xqKey.Rows - 1 - move[3] + '0' << 4) | (move[2] - 'a');
+			bookItem.Score = atoi(score);
+			BookInsert(bookName, &xqKey, &bookItem);
+		}
+		fclose(file);
+	}*/
 
 	//查询测试
 	const char* fens[] = 
