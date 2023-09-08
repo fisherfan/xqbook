@@ -2,8 +2,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "db.h"
-#pragma comment(lib,"libdb181d.lib")
+#include "db.h"//BerkeleyDB头文件
+#pragma comment(lib, "legacy_stdio_definitions.lib")//由于BerkeleyDB库文件是低版本VC编译的（vc2010），需要引入这个库文件解决链接错误
+FILE* __cdecl __iob_func(unsigned i)//高版本vc将__iob_func改名成__acrt_iob_func，这里自己定义一下解决BerkeleyDB库文件找不到__iob_func的问题
+{
+	return __acrt_iob_func(i);
+}
+#pragma comment(lib, "ws2_32.lib")//BerkeleyDB库文件依赖这个库
+#pragma comment(lib, "libdb_small181s.lib")//BerkeleyDB库文件
 
 typedef unsigned char bool;
 #define true 1
@@ -49,6 +55,60 @@ int GetRowsAndCols(const char *fen, int *rows, int *cols)
 		}
 	}
 	return *rows * *cols;
+}
+
+void FillData(unsigned char *data, int bits, int val, int size)//向字节数组中填充size个比特位（从val复制数据到data中bits所指的位置）
+{
+	int space = 8 - bits % 8;//当前位置剩余的位数（范围：1~8）
+	for (int sizeLeft = size, i = bits / 8; sizeLeft > 0; space = 8, i++)//使用大端模式填充数据（高字节在前低字节在后）
+	{
+		data[i] &= 0xff << space;//剩余位清零
+		unsigned char dat;//本次填充数据
+		int sizeFill;//本次填充位数
+		if (sizeLeft < space)
+		{
+			dat = val << (space - sizeLeft);
+			sizeFill = sizeLeft;
+		}
+		else
+		{
+			dat = val >> (sizeLeft - space);
+			sizeFill = space;
+		}
+		data[i] |= (0xff >> (8 - space)) & dat;//填充数据（注意dat里的不相关位可能有垃圾数据所以要置0）
+		sizeLeft -= sizeFill;
+	}
+}
+
+int RestoreData(const unsigned char *data, int bits, int size)//从字节数组中还原size个比特位（从data中bits所指位置复制数据并返回）
+{
+	int val = 0;
+	int space = 8 - bits % 8;//当前位置剩余的位数（范围：1~8）
+	for (int sizeLeft = size, i = bits / 8; sizeLeft > 0; space = 8, i++)
+	{
+		unsigned char dat;//本次还原数据
+		int sizeRestore;//本次还原位数
+		if (sizeLeft < space)
+		{
+			dat = data[i] >> (space - sizeLeft);
+			sizeRestore = sizeLeft;
+		}
+		else
+		{
+			dat = data[i];
+			sizeRestore = space;
+		}
+		val <<= sizeRestore;//左移腾出位置
+		val |= (0xff >> (8 - sizeRestore)) & dat;//还原数据（注意dat里的不相关位可能有垃圾数据所以要置0）
+		sizeLeft -= sizeRestore;
+	}
+	//如果取出来的数值是1字节或2字节，那么要进行一次转换处理，否则负数值会取成正数
+	if (size == 8)
+		val = (char)val;
+	else if (size == 16)
+		val = (short)val;
+
+	return val;
 }
 
 void FenToKey(const char *fen, XQKEY *xqKey)
@@ -133,6 +193,24 @@ void FenToKey(const char *fen, XQKEY *xqKey)
 		}
 	}
 	//计算key
+	//方法一：直观易懂
+	//const int codeBits = 4;//棋子编码位数（固定值）
+	//int bits = 0;//已填入的位数
+	//for (int index = 0; index < size; index++)
+	//{
+	//	if (ary[index] == -1)//无棋直接用0（占1位）
+	//	{
+	//		FillData(xqKey->Key, bits, 0, 1);
+	//		bits++;
+	//	}
+	//	else//有棋用1+棋子编码（占1+4=5位）
+	//	{
+	//		FillData(xqKey->Key, bits, (1 << 4) | ary[index], 1 + codeBits);
+	//		bits += 1 + codeBits;
+	//	}
+	//}
+	//xqKey->KeyLen = (bits + 7) / 8;
+	//方法二：速度快些
 	xqKey->KeyLen = 0;
 	unsigned int buffer = 0;//缓冲区
 	const int bufferBits = sizeof(buffer) * 8;//缓冲区里一共有多少位（固定值）
@@ -187,6 +265,67 @@ unsigned short MirrorMove(unsigned short move, bool mirrorUD, bool mirrorLR, int
 	return move;
 }
 
+unsigned char GetNumberMask(int num)
+{
+	if (num == 0)
+		return 0;
+	else if (num >= -128 && num < 127)
+		return 1;
+	else if (num >= -32768 && num < 32767)
+		return 2;
+	else
+		return 3;
+}
+
+int BookItemToData(const BOOKITEM *bookItem, const XQKEY *xqKey, unsigned char *data)
+{
+	int mask;
+	int size;
+	int bits = 0;//已填充的位数
+	//着法
+	FillData(data, bits,
+		MirrorMove(bookItem->Move, xqKey->MirrorUD, xqKey->MirrorLR, xqKey->Rows, xqKey->Cols),//根据局面是否镜像，决定着法是否也镜像保存
+		16);
+	bits += 16;
+	//分数
+	mask = GetNumberMask(bookItem->Score);
+	FillData(data, bits, mask, 2);
+	bits += 2;
+	size = (mask == 3 ? 4 : mask) * 8;
+	FillData(data, bits, bookItem->Score, size);
+	bits += size;
+	//胜
+	mask = GetNumberMask(bookItem->Win);
+	FillData(data, bits, mask, 2);
+	bits += 2;
+	size = (mask == 3 ? 4 : mask) * 8;
+	FillData(data, bits, bookItem->Win, size);
+	bits += size;
+	//和
+	mask = GetNumberMask(bookItem->Draw);
+	FillData(data, bits, mask, 2);
+	bits += 2;
+	size = (mask == 3 ? 4 : mask) * 8;
+	FillData(data, bits, bookItem->Draw, size);
+	bits += size;
+	//负
+	mask = GetNumberMask(bookItem->Lost);
+	FillData(data, bits, mask, 2);
+	bits += 2;
+	size = (mask == 3 ? 4 : mask) * 8;
+	FillData(data, bits, bookItem->Lost, size);
+	bits += size;
+	//有效
+	FillData(data, bits, bookItem->Valid, 1);
+	bits += 1;
+	//备注
+	int dataLen = (bits + 7) / 8;
+	int memoLen = strlen(bookItem->Memo);
+	memcpy(data + dataLen, bookItem->Memo, memoLen + 1);//注意memo里的内容要保证是utf8编码再插入
+
+	return dataLen + memoLen + 1;
+}
+
 bool BookInsert(const char *bookName, const XQKEY *xqKey, const BOOKITEM *bookItem)
 {
 	bool success = false;
@@ -196,20 +335,68 @@ bool BookInsert(const char *bookName, const XQKEY *xqKey, const BOOKITEM *bookIt
 	{
 		DBT key = {0};
 		DBT data = {0};
-		key.data = xqKey->Key;
+		key.data = (void*)xqKey->Key;
 		key.size = xqKey->KeyLen;
 		unsigned char *pData = malloc(4096);
-		if (dbp->get(dbp, NULL, &key, &data, 0) == 0)
-		{
+		if (dbp->get(dbp, NULL, &key, &data, 0) == 0)//如果该局面已经有着法，新的着法追加在其后面
 			memcpy(pData, data.data, data.size);
-			//释放data？
-		}
-		data.size += BookItemToData(bookItem, pData + data.size);
+		data.size += BookItemToData(bookItem, xqKey, pData + data.size);
+		data.data = pData;
 		dbp->put(dbp, NULL, &key, &data, 0);
 		free(pData);
 		dbp->close(dbp, 0);
 	}
 	return success;
+}
+
+int DataToBookItems(const unsigned char *data, int dataLen, const XQKEY *xqKey, BOOKITEM *bookItems)
+{
+	int count = 0;
+	int bits = 0;
+	int mask;
+	int size;
+	for (; bits / 8 < dataLen; count++)
+	{
+		//着法
+		bookItems[count].Move = MirrorMove(RestoreData(data, bits, 16), xqKey->MirrorUD, xqKey->MirrorLR, xqKey->Rows, xqKey->Cols);//库里保存的着法可能是镜像的
+		bits += 16;
+		//分数
+		mask = RestoreData(data, bits, 2);
+		bits += 2;
+		size = (mask == 3 ? 4 : mask) * 8;
+		bookItems[count].Score = RestoreData(data, bits, size);
+		bits += size;
+		//胜
+		mask = RestoreData(data, bits, 2);
+		bits += 2;
+		size = (mask == 3 ? 4 : mask) * 8;
+		bookItems[count].Win = RestoreData(data, bits, size);
+		bits += size;
+		//和
+		mask = RestoreData(data, bits, 2);
+		bits += 2;
+		size = (mask == 3 ? 4 : mask) * 8;
+		bookItems[count].Draw = RestoreData(data, bits, size);
+		bits += size;
+		//负
+		mask = RestoreData(data, bits, 2);
+		bits += 2;
+		size = (mask == 3 ? 4 : mask) * 8;
+		bookItems[count].Lost = RestoreData(data, bits, size);
+		bits += size;
+		//有效
+		bookItems[count].Valid = RestoreData(data, bits, 1);
+		bits += 1;
+		//备注
+		int dataLen = (bits + 7) / 8;
+		int memoLen = strlen(data + dataLen);
+		bits = (dataLen + memoLen + 1) * 8;
+		if (sizeof(bookItems[count].Memo) - 1 < memoLen)
+			memoLen = sizeof(bookItems[count].Memo) - 1;
+		memcpy(bookItems[count].Memo, data + dataLen, memoLen);
+		bookItems[count].Memo[memoLen] = 0;//注意memo读出来是utf8编码
+	}
+	return count;
 }
 
 int BookQuery(const char *bookName, const XQKEY *xqKey, BOOKITEM *bookItems)
@@ -221,13 +408,10 @@ int BookQuery(const char *bookName, const XQKEY *xqKey, BOOKITEM *bookItems)
 	{
 		DBT key = {0};
 		DBT data = {0};
-		key.data = xqKey->Key;
+		key.data = (void*)xqKey->Key;
 		key.size = xqKey->KeyLen;
 		if (dbp->get(dbp, NULL, &key, &data, 0) == 0)
-		{
-			count = DataToBookItems(data.data, data.size, bookItems);
-			//释放data？
-		}
+			count = DataToBookItems(data.data, data.size, xqKey, bookItems);
 		dbp->close(dbp, 0);
 	}
 	return count;
@@ -242,6 +426,11 @@ int main(int argc, char **argv)
 	//FenToKey("rnbakabnr/9/1c5c1/p1p1p1p1p/9/9/P1P1P1P1P/1C5C1/9/RNBAKABNR w - - 0 1", &xqKey);//初始局面
 	//BOOKITEM bookItem = { 0 };
 	//bookItem.Move = 0x6656;//兵三进一（6行6列->5行6列）
+	//bookItem.Score = 1;
+	//bookItem.Win = 128;
+	//bookItem.Draw = 65536;
+	//bookItem.Lost = -1;
+	//bookItem.Valid = 1;
 	//BookInsert(bookName, &xqKey, &bookItem);
 
 	//批量插入测试
@@ -256,7 +445,7 @@ int main(int argc, char **argv)
 			XQKEY xqKey;
 			FenToKey(line, &xqKey);
 			BOOKITEM bookItem = { 0 };
-			bookItem.Move = (xqKey.Rows - 1 - move[1] + '0' << 12) | (move[0] - 'a' << 8) 
+			bookItem.Move = (xqKey.Rows - 1 - move[1] + '0' << 12) | (move[0] - 'a' << 8)
 				| (xqKey.Rows - 1 - move[3] + '0' << 4) | (move[2] - 'a');
 			bookItem.Score = atoi(score);
 			BookInsert(bookName, &xqKey, &bookItem);
