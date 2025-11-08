@@ -88,7 +88,7 @@ void FenToKey(const char *fen, XQKEY *xqKey)
 			ary[index++] = val;
 		}
 	}
-	//上下镜像（如果需要的话）
+	//上下镜像（如果需要的话），注意这里实际是旋转局面，否则开局局面炮二平五会对应炮８平５，虽然不影响功能但也有点别扭
 	xqKey->MirrorUD = false;
 	if (turn == 0)//走棋方是黑方的话需要上下镜像
 	{
@@ -97,7 +97,7 @@ void FenToKey(const char *fen, XQKEY *xqKey)
 			for (int col = 0; col < xqKey->Cols; col++)
 			{
 				int index = row * xqKey->Cols + col;
-				int index2 = (xqKey->Rows - 1 - row) * xqKey->Cols + col;
+				int index2 = (xqKey->Rows - 1 - row) * xqKey->Cols + (xqKey->Cols - 1 - col);
 				char tmp = ary[index];
 				ary[index] = ary[index2];
 				ary[index2] = tmp;
@@ -107,14 +107,18 @@ void FenToKey(const char *fen, XQKEY *xqKey)
 	}
 	//左右镜像（如果需要的话）
 	xqKey->MirrorLR = false;
-	for (int row = 0; row < xqKey->Rows && !xqKey->MirrorLR; row++)
+	bool lrDone = false;
+	for (int row = 0; row < xqKey->Rows && !lrDone; row++)
 	{
-		for (int col = 0; col < xqKey->Cols / 2 && !xqKey->MirrorLR; col++)
+		for (int col = 0; col < xqKey->Cols / 2 && !lrDone; col++)
 		{
 			int index = row * xqKey->Cols + col;
 			int index2 = row * xqKey->Cols + (xqKey->Cols - 1 - col);
-			if (ary[index2] > ary[index])//右边比左边大的话需要左右镜像
-				xqKey->MirrorLR = true;
+			if (ary[index] != ary[index2])//两边出现不一样棋子了要决定是否左右镜像
+			{
+				xqKey->MirrorLR = ary[index2] > ary[index];//右边比左边大的话需要左右镜像
+				lrDone = true;
+			}
 		}
 	}
 	if (xqKey->MirrorLR)
@@ -175,6 +179,9 @@ unsigned short MirrorMove(unsigned short move, bool mirrorUD, bool mirrorLR, int
 		{
 			fromRow = rows - 1 - fromRow;
 			toRow = rows - 1 - toRow;
+			//由于FenToKey函数中上下镜像实际是旋转局面，所以这里也要把左右镜像
+			fromCol = cols - 1 - fromCol;
+			toCol = cols - 1 - toCol;
 		}
 		if (mirrorLR)
 		{
