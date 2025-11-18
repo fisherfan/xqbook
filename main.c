@@ -232,7 +232,7 @@ void FenToKey(const char *fen, XQKEY *xqKey)
 			buffer |= ary[index] << (bufferBits - bits - 1 - codeBits);
 			bits += 1 + codeBits;
 		}
-		if (index == size - 1 || bufferBits - bits < ary[index + 1] == -1 ? 1 : codeBits + 1)//最后一个格子已读取或缓冲区剩余空间不足以存放下一个格子则写入
+		if (index == size - 1 || bufferBits - bits < (ary[index + 1] == -1 ? 1 : codeBits + 1))//最后一个格子已读取或缓冲区剩余空间不足以存放下一个格子则写入
 		{
 			int threashold = index == size - 1 ? 1 : 8;//满足写入条件的阈值（没到最后一个格子时要把不足8位的数据保留，到最后一个格子时要全部写入）
 			while (bits >= threashold)
